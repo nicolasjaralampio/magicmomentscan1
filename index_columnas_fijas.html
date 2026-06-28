@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lector de productos</title>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 18px;
+      background: #f3f4f6;
+      color: #111827;
+    }
+
+    .contenedor {
+      max-width: 650px;
+      margin: auto;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 25px;
+      margin-bottom: 8px;
+    }
+
+    .contador {
+      text-align: center;
+      color: #555;
+      margin-bottom: 16px;
+      line-height: 1.45;
+    }
+
+    button, input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 15px;
+      margin: 7px 0;
+      font-size: 18px;
+      border-radius: 10px;
+    }
+
+    input {
+      border: 1px solid #ccc;
+      background: white;
+    }
+
+    button {
+      background: #111827;
+      color: white;
+      border: none;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button.secundario {
+      background: #6b7280;
+    }
+
+    #reader {
+      margin-top: 12px;
+      background: white;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .card {
+      background: white;
+      border-radius: 14px;
+      padding: 22px;
+      margin-top: 18px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+    }
+
+    .descripcion {
+      font-size: 25px;
+      font-weight: bold;
+      margin-bottom: 14px;
+    }
+
+    .precio {
+      font-size: 42px;
+      font-weight: bold;
+      color: #15803d;
+      margin: 12px 0;
+    }
+
+    .precio.sin-precio {
+      color: #b91c1c;
+      font-size: 30px;
+    }
+
+    .codigo {
+      color: #4b5563;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    .error {
+      color: #b91c1c;
+      font-size: 22px;
+      font-weight: bold;
+    }
+
+    .aviso {
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      color: #7c2d12;
+      padding: 12px;
+      border-radius: 10px;
+      margin-top: 12px;
+      font-size: 15px;
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="contenedor">
+    <h1>Lector de productos</h1>
+
+    <div class="contador" id="contador">
+      Cargando base de datos...
+    </div>
+
+    <button onclick="iniciarScanner()">Escanear código con cámara</button>
+    <button class="secundario" onclick="detenerScanner()">Detener cámara</button>
+
+    <input type="text" id="codigoManual" placeholder="Ingresar o escanear código con lector USB" autofocus />
+    <button onclick="buscarManual()">Buscar</button>
+
+    <div id="aviso" class="aviso"></div>
+    <div id="reader"></div>
+    <div id="resultado"></div>
+  </div>
+
+<script>
+let productos = [];
+let scannerActivo = null;
+
+function normalizar(valor) {
+  return String(valor ?? "").trim();
+}
+
+function esPrecioNoCargado(valor) {
+  return normalizar(valor).toLowerCase() === "precio no cargado";
+}
+
+function formatearPrecio(valor) {
+  valor = normalizar(valor);
+
+  if (valor === "" || esPrecioNoCargado(valor)) {
+    return "Precio no cargado";
+  }
+
+  const limpio = valor
+    .replace(/\$/g, "")
+    .replace(/\s/g, "")
+    .replace(/\./g, "")
+    .replace(",", ".");
+
+  const numero = Number(limpio);
+
+  if (isNaN(numero)) return "$ " + valor;
+
+  return numero.toLocaleString("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    maximumFractionDigits: 0
+  });
+}
+
+function mostrarAviso(texto) {
+  const aviso = document.getElementById("aviso");
+  aviso.style.display = "block";
+  aviso.textContent = texto;
+}
+
+function ocultarAviso() {
+  const aviso = document.getElementById("aviso");
+  aviso.style.display = "none";
+  aviso.textContent = "";
+}
+
+async function cargarProductos() {
+  try {
+    const respuesta = await fetch("productos.json");
+    productos = await respuesta.json();
+
+    const conPrecio = productos.filter(p => !esPrecioNoCargado(p.precio)).length;
+    const sinPrecio = productos.length - conPrecio;
+
+    document.getElementById("contador").innerHTML =
+      "Productos cargados: <b>" + productos.length + "</b><br>" +
+      "Con precio: <b>" + conPrecio + "</b> · Sin precio: <b>" + sinPrecio + "</b>";
+  } catch (e) {
+    document.getElementById("contador").innerHTML =
+      "<b>No se pudo cargar productos.json</b><br>Subí index.html y productos.json en la misma carpeta del repositorio.";
+  }
+}
+
+function buscarProducto(codigo) {
+  codigo = normalizar(codigo);
+
+  if (!codigo) {
+    mostrarAviso("Ingresá o escaneá un código.");
+    return;
+  }
+
+  const producto = productos.find(p =>
+    normalizar(p.codigoBarra) === codigo ||
+    normalizar(p.codigoInterno) === codigo
+  );
+
+  mostrarResultado(producto, codigo);
+}
+
+function mostrarResultado(producto, codigo) {
+  const div = document.getElementById("resultado");
+  div.innerHTML = "";
+
+  const card = document.createElement("div");
+  card.className = "card";
+
+  if (!producto) {
+    const error = document.createElement("div");
+    error.className = "error";
+    error.textContent = "Producto no encontrado";
+
+    const codigoEl = document.createElement("p");
+    codigoEl.textContent = "Código leído: " + codigo;
+
+    card.appendChild(error);
+    card.appendChild(codigoEl);
+    div.appendChild(card);
+    return;
+  }
+
+  const descripcion = document.createElement("div");
+  descripcion.className = "descripcion";
+  descripcion.textContent = producto.descripcion;
+
+  const precio = document.createElement("div");
+  precio.className = "precio";
+  if (esPrecioNoCargado(producto.precio)) {
+    precio.classList.add("sin-precio");
+  }
+  precio.textContent = formatearPrecio(producto.precio);
+
+  const codigos = document.createElement("div");
+  codigos.className = "codigo";
+  codigos.innerHTML =
+    "<b>Código de barra:</b> " + (producto.codigoBarra || "-") +
+    "<br><b>Código interno:</b> " + (producto.codigoInterno || "-");
+
+  card.appendChild(descripcion);
+  card.appendChild(precio);
+  card.appendChild(codigos);
+  div.appendChild(card);
+}
+
+function buscarManual() {
+  const input = document.getElementById("codigoManual");
+  buscarProducto(input.value);
+  input.select();
+}
+
+async function iniciarScanner() {
+  ocultarAviso();
+
+  if (!window.isSecureContext) {
+    mostrarAviso("La cámara requiere HTTPS. En GitHub Pages funciona porque usa https://. No funciona abriendo el archivo directo desde la PC.");
+    return;
+  }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    mostrarAviso("Este navegador no permite acceso a cámara. Probá con Chrome o Edge actualizado.");
+    return;
+  }
+
+  try {
+    if (scannerActivo) {
+      await scannerActivo.stop();
+      scannerActivo = null;
+    }
+
+    scannerActivo = new Html5Qrcode("reader");
+
+    await scannerActivo.start(
+      { facingMode: "environment" },
+      {
+        fps: 10,
+        qrbox: { width: 300, height: 170 },
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E
+        ]
+      },
+      async codigoLeido => {
+        buscarProducto(codigoLeido);
+        document.getElementById("codigoManual").value = codigoLeido;
+
+        try {
+          await scannerActivo.stop();
+          scannerActivo = null;
+        } catch (e) {}
+      },
+      error => {}
+    );
+  } catch (err) {
+    mostrarAviso("No se pudo abrir la cámara. Revisá permisos y que estés entrando desde GitHub Pages con https://.");
+  }
+}
+
+async function detenerScanner() {
+  if (scannerActivo) {
+    try { await scannerActivo.stop(); } catch (e) {}
+    scannerActivo = null;
+  }
+}
+
+document.getElementById("codigoManual").addEventListener("keydown", function(e) {
+  if (e.key === "Enter") buscarManual();
+});
+
+cargarProductos();
+</script>
+
+</body>
+</html>
